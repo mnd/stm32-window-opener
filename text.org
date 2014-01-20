@@ -1,0 +1,1007 @@
+#+OPTIONS:   ^:{}
+* Введение в программирования микроконтроллеров на примере отладочной платы STM32L-DISCOVERY
+
+Возникло желание написать что-нибудь под микроконтроллер. В качестве задачи было
+решено собрать железку открывающую окно, когда в комнате становится слишком
+жарко.
+
+В качестве микроконтроллера была взята отладочная плата STM32L-DISCOVERY, для
+начала программирования которой не требуется вообще ничего, кроме USB-miniUSB
+провода. Кроме того плата несёт с собой стопку оборудования, явно
+предназначенного для быстрого старта: Экран состоящий из шести 14-сегментных
+символов, два диода, одна кнопка и один датчик прикосновения (Linear touch
+sensor/touchkeys).
+
+Первым делом, конечно же, после покупки подобного устройства надо скачать
+документацию к нему. Идём на [[http://www.st.com/web/en/catalog/tools/FM116/SC959/SS1532/PF250990][страницу]] данной платы Самая нужная статья там это
+"UM1079: STM32L1 discovery kits: STM32L-DISCOVERY and 32L152CDISCOVERY". В ней
+рассказано о том какая переферия куда навешана на этой плате и через какаие пины
+ввода-вывода с ней можно работать.
+
+А дальше есть два варианта развития событий. Либо вы как приличный человек
+берёте "UM1451: Getting started with software development toolchains for the
+STM32L-DISCOVERY and 32L152CDISCOVERY boards" и идёте по ссылке "STSW-STM32072 -
+STM32L1 Discovery firmware package (RN0079)", покупаете одну из предложенных
+студий для разработки на армовых микроконтроллерах, разворачиваете её,
+подключаете приличный набор библиотек из STM32L1 Discovery firmware package,
+либо поступаете как фанатик, отказываясь от понятных средств разработки в
+пользу свободного тулчайна.
+
+Во втором случае вам всё равно не помешает скачать "STM32L1 Discovery firmware
+package", но он понадобится несколько позже.
+
+Сначала же придётся решить другие проблемы. Во первых надо найти документацию
+на микроконтроллер. Как мы увидели по первой ссылке у нас в руках либо
+STM32L152RBT6, либо STM32L152RCT6. Подробнее можно посмотреть на самом
+чипе. 
+
+В первую очередь на [[http://www.st.com/web/catalog/mmc/FM141/SC1544/SS1374/LN1041/PF248820#][странице]] с документацией к этому микроконтроллеру нас
+интересует reference manual под названием "RM0038: STM32L100xx, STM32L151xx,
+STM32L152xx and STM32L162xx advanced ARM-based 32-bit MCUs". Для начала в этом
+документе стоит посмотреть на вторую и третью таблицы, в которых нарисовано куда
+в памяти что размещается. Отсюда сразу будет видно, что управление переферией
+идёт через регистры отображённые в оперативную память на адреса от 0x4000 0000
+до 0xA000 0000, а наши программы будут записываться в адреса 0x0800 0000 и выше.
+
+На этом и так затянувшееся введение стоит закончить.
+
+* Оборудование рабочего места
+
+Как уже было сказано для разработки нам не потребуется ничего, кроме USB -
+miniUSB кабеля, но только подключать внешние устройства приматывая провода к
+пинам -- удовольствие ниже среднего. Выходом из ситуации будет покупка
+[[http://ru.wikipedia.org/wiki/%D0%9C%D0%B0%D0%BA%D0%B5%D1%82%D0%BD%D0%B0%D1%8F_%D0%BF%D0%BB%D0%B0%D1%82%D0%B0][Макетной платы]], а так свой первый модуль вы скорее всего разберёте, как только
+доделаете, чтобы попробовать использовать отладочную плату как-нибудь ещё, то
+лучше всего брать отладочную плату без пайки и стопку соединительных проводов
+к ней. ополнительно иногда хочется проверять наличие-отсутствие сигнала на тех
+или иных пинах или, например, силу тока на участках цепи. Для этого берётся
+мультиметр.
+
+Кроме оборудования надо найти программу для прошивания данного
+устройства. Быстрый поиск по запросу "st link open source" выдал мне вот [[https://github.com/texane/stlink/][такую]]
+ссылку. Оттуда можно взять и скомпилировать программу работающую с st link'ом и
+умеющую как прошивать через него, так и запускать отладчик.
+
+И последней необходимой программой будет gcc, умеющий arm в качестве целевой
+платформы. Чтобы не заморачиваться и с его сборкой я просто установил
+gcc-arm-none-eabi вместе с gdb-arm-none-eabi из репозиториев дебиана. Кроме
+того, если вы устанавливаете gcc-arm-none-eabi из репозиториев дебиана --
+убедитесь, что libnewlib-arm-none-eabi тоже установилась, иначе вы сможете
+компилировать только самые простые программы (у вас, к примеру, не будет
+арифметики с плавающей точкой) и только с ключём -ffreestanding, который говорит
+gcc компилировать программу без поддержки libc.
+
+Осталось проверить работает ли это всё. Для проверки используем "STM32L1
+Discovery firmware package" о котором говорилось выше. В связи с тем, что
+ставить проприетарные студии я не стал, а пытаться извлечь из их проектов
+правила сборки -- слишком муторно, то воспользуемся уже собранными бинарниками
+официальных примеров. На свежей плате уже запущено приложение
+"AN3413-Current_consumption_touch_sensing", которое лежит в
+"STM32L1_Discovery_Firmware_Pack_V1.0.3/Projects", так что прошьём устройство
+второй тестовой программой.
+
+Переходим в каталог с бинарником
+"STM32L1_Discovery_Firmware_Pack_V1.0.3/Projects/AN3964-Temperature_sensor/Binary"
+и переводим бинарник из формата ihex в формат понятный нашему только-что
+собранному st-util:
+
+> arm-none-eabi-objcopy -Iihex -obinary STM32L-Discovery.hex STM32L-Discovery.bin
+
+И зальём в плату эту программу
+
+> st-flash write STM32L-Discovery.bin 0x08000000
+
+Откуда взялось 0x08000000 было сказано выше. Это адрес с которого должна
+размещаться наша программа.
+
+Теперь устройство должно показывать температуру процессора, вместо напряжения и
+мощности, которые оно показывало изначально.
+
+* Первые попытки управления
+
+Когда мы знаем, что у нас есть полностью рабочее окружения для программирования
+данного девайса. Самый простой первый шаг -- это помигать диодом. А учитывая,
+что так считают все, то можно попытаться найти человека, который мигал диодами,
+не используя ST'шные библиотеки.
+
+Поиск выдал [[http://sourcegate.wordpress.com/category/stm32l-discovery/page/2/][блог]] парня, который уже имел опыт программирования avr'ов и начинал
+знакомство с данной платой. Сразу позаимствуем, слегка видоизменив, у него код
+(который и он собирал из разных источников):
+
+#+BEGIN_SRC c
+// By Wolfgang Wieser, heavily based on:
+// http://fun-tech.se/stm32/OlimexBlinky/mini.php
+// With parts from
+// http://sourcegate.wordpress.com/2012/09/20/how-the-stm32l-discovery-demo-works/
+#include <stdint.h>
+#define STACK_TOP 0x20000800   // just a tiny stack for demo
+
+static void nmi_handler(void);
+static void hardfault_handler(void);
+int main(void);
+
+// Define the vector table
+unsigned int *myvectors[4]
+__attribute__ ((section("vectors"))) = {
+    (unsigned int *) STACK_TOP,         // stack pointer
+    (unsigned int *) main,              // code entry point
+    (unsigned int *) nmi_handler,       // NMI handler (not really)
+    (unsigned int *) hardfault_handler  // hard fault handler
+};
+
+int main(void)
+{
+    *((uint32_t*) 0x4002381C) = 0x00000002; /* Enable GPIO clock */
+    *((uint32_t*) 0x40020400) = 0x00005000; /* Output mode */
+    *((uint32_t*) 0x40020418) = 0x00000080; /* LED on */
+    int i=0;
+
+    for(;;)
+    {
+        i++;
+    }
+}
+
+void nmi_handler(void)
+{
+    for(;;);
+}
+
+void hardfault_handler(void)
+{
+    for(;;);
+}
+#+END_SRC
+
+Для компиляции потребуется уже установленный arm-none-eabi-gcc и линковочный
+скрипт, который мы, также как в [[http://sourcegate.wordpress.com/2012/09/18/getting-started-with-an-stm32l-discovery-with-linux-and-gcc/][блоге]] возьмём из [[https://raw.github.com/Nomados/STM32F4Discovery-ethernet-PHY-DP83848-demo-ChibiOS/master/ch/os/ports/GCC/ARMCMx/STM32L1xx/ld/STM32L152xB.ld][ChibiOS]]. Скомпилируем программу
+и зальём на наше устройство:
+
+#+BEGIN_VERSE
+ > arm-none-eabi-gcc -O0 -g -mcpu=cortex-m3 -mthumb -c -o main.o main.c
+ > arm-none-eabi-ld -TSTM32L152xB.ld -nostartfiles -o demo.elf main.o
+ > arm-none-eabi-objcopy -Obinary demo.elf demo.bin
+ > st-flash write ./demo.bin 0x8000000
+#+END_VERSE
+
+Устройство запустилось и зелёный светодиод загорелся. Теперь поймём что значили
+все наши действия.
+
+** Что значат команды сборки.
+
+#+BEGIN_VERSE
+ > arm-none-eabi-gcc -O0 -g -mcpu=cortex-m3 -mthumb -c -o main.o main.c
+#+END_VERSE
+
+ + "-O0"
+   отключает оптимизации и позволяет нам надеяться, что gcc не удалит наш вечный цикл.
+ + "-g"
+   включает отладочную информацию в файл.
+ + "-mcpu=cortex-m3"
+   выставляет модель используемого армового процессора.
+ + "-mthumb" 
+   заставляет использовать gcc набор иснтрукций thumb вместо набора
+   arm. Без этого ключа компилятор скажет что-то вроде "error: target CPU does
+   not support ARM mode"
+ + "-c" отключает линковку сразу после сборки
+
+
+#+BEGIN_VERSE
+ > arm-none-eabi-ld -TSTM32L152xB.ld -nostartfiles -o demo.elf main.o
+#+END_VERSE
+
+ + "-TSTM32L152xB.ld"
+   указыват линковщику на скрипт, в котором описаны правила размещения секций кода
+   и данных в памяти.  
+ + "-nostartfiles" отключает использование стандартных
+   функций запускающихся перед main'ом.
+
+#+BEGIN_VERSE
+ > arm-none-eabi-objcopy -Obinary demo.elf demo.bin
+ > st-flash write ./demo.bin 0x8000000
+#+END_VERSE
+
+Эти две команды уже обсуждались в предыдущем разделе.
+
+** Что значит код
+
+Во первых видя
+
+#+BEGIN_SRC c
+// Define the vector table
+unsigned int *myvectors[4]
+__attribute__ ((section("vectors"))) = {
+    (unsigned int *) STACK_TOP,         // stack pointer
+    (unsigned int *) main,              // code entry point
+    (unsigned int *) nmi_handler,       // NMI handler (not really)
+    (unsigned int *) hardfault_handler  // hard fault handler
+};
+#+END_SRC
+
+Мы сразу можем сказать, что где-то в памяти (где конкретно можно посмотреть в
+документации, либо в файле линковочного скрипта STM32L152xB.ld) находится
+область векторов, в первых четырёх позициях которой указываются начальный адрес
+стека, точка входа в программу и обработчики двух прерываний.
+
+И второй неочевидный кусок кода:
+
+#+BEGIN_SRC c
+    *((uint32_t*) 0x4002381C) = 0x00000002; /* Enable GPIO clock */
+    *((uint32_t*) 0x40020400) = 0x00005000; /* Output mode */
+    *((uint32_t*) 0x40020418) = 0x00000080; /* LED on */
+#+END_SRC
+
+Для того чтобы выяснить, что происходит тут -- придётся зарываться в
+документацию. А именно в Reference manual под названием "RM0038: STM32L100xx,
+STM32L151xx, STM32L152xx and STM32L162xx advanced ARM-based 32-bit MCUs".
+
+Пойдём построчно и будем искать какие регистры обозначают использованные адреса
+памяти. 
+
+Адрес 0x4002381C попадает в интервал 0x40023800 - 0x40023BFF где находятся RCC
+регистры. Смещение от начального адреса у него 0x4002381C - 0x40023800 = 0x1C.
+Это регистр RCC_AHBENR. Что нам говорит о нём документация:
+
+#+BEGIN_VERSE
+ > When the peripheral clock is not active, the peripheral register values may 
+ > not be readable by software and the returned value is always 0x0.
+#+END_VERSE
+
+Таким образом пока мы не включим часы -- переферия будет программно
+недоступна. При инциализации регистра значением 0x00000002 -- выставляется
+первый бит регистра, который отвечает за 'GPIO port B clock enable', то есть за
+возможность работать со всеми PBx пинами на отладочной плате.
+
+
+Ищем адрес 0x40020400 из второй строчки. Это оказывается регистр со смещением
+0x0 из блока 0x4002 0400 - 0x4002 07FF управляющего GPIOB -- той самой
+переферии, для которой мы только что включили часы. Документация говорит, что
+по этому адресу находится GPIOB_MODER регистр, который говорит в каком
+конкретно режиме находится каждый из PBx пинов. Когда мы присваиваем ему
+значение 0x00005000 мы устанавливаем 12 и 14 биты в 1, а следовательно PB6 и
+PB7 в режим General purpose output mode.
+
+
+Последний адрес 0x40020418 попадает в ту же группу GPIOB регистров, со
+смещением 0x18 -- GPIOB_BSRR регистр, половина которого отведена для установки
+битов в GPIOB_ODR регистре, а половина для их удаления. GPIOB_ODR же в свою
+очередь в соответствии с названием (output data register) говорит на какой
+выход будет подаваться единица (на пин подастся напряжение), а на какой -- нет
+(напряжения, соответственно не будет). Таким образом запись числа 0x00000080 по
+адресу 0x40020418 устанавливает значение PB7 единицу, благодаря чему на диод
+подаётся напряжение и он начинает светиться.
+
+Таким образом мы можем управлять диодиками и собирать герлянды. 
+
+* Заменя адресов портов их именами
+
+Самое время избавиться от адресов и начать работать с именами. Можно, конечно,
+взять документацию и начать сверху вниз забивать все адреса, но это достаточно
+муторно. По этому пойдём по пути наименьшего сопротивления и воспользыемся
+заголовочными файлами из "STM32L1 Discovery firmware package". Главным
+заголовочным файлом там, как видно из примеров идущих в каталоге Projects/
+является файл stm32l1xx.h. Подключим его в нашем исходнике и в строку компиляции
+добавим 
+
+#+BEGIN_VERSE
+-I path/to/STM32L1_Discovery_Firmware_Pack_V1.0.3/Libraries/CMSIS/Device/ST/STM32L1xx/Include/
+#+END_VERSE
+
+При попытке скомпилировать получим ошибку
+
+#+BEGIN_VERSE
+stm32l1xx.h:266:22: fatal error: core_cm3.h: No such file or directory
+ #include "core_cm3.h"
+                      ^
+compilation terminated.
+#+END_VERSE
+
+Найдем этот хэдер и добавим путь к нему в ключи компилятора. Таким образом
+компиляция теперь будет проходить при помощи команды:
+
+#+BEGIN_VERSE
+arm-none-eabi-gcc -O0 -g -mcpu=cortex-m3 -c -o main.o main.c -Wall -mthumb \
+  -I path/to/STM32L1_Discovery_Firmware_Pack_V1.0.3/Libraries/CMSIS/Device/ST/STM32L1xx/Include/ \
+  -I../STM32L1_Discovery_Firmware_Pack_V1.0.3/Libraries/CMSIS/Include/
+#+END_VERSE
+
+Благодаря чему мы можем переписать код в более понятном виде:
+
+#+BEGIN_SRC c
+#include <stm32l1xx.h>
+#include <stdint.h>
+#include <stdbool.h>
+#define STACK_TOP 0x20004000 // End of memory
+
+void nmi_handler (void);
+void hardfault_handler (void);
+void delay (void);
+int main (void);
+
+/* vector table, according to reference documentaion, occupied 61 pointer-sized cells  */
+unsigned int *myvectors[61] __attribute__ ((section ("vectors"))) =
+{
+  [0]  = (unsigned int *) STACK_TOP,
+  [1]  = (unsigned int *) main,
+  [2]  = (unsigned int *) nmi_handler,
+  [3]  = (unsigned int *) hardfault_handler
+};
+
+int
+main (void)
+{
+  int n = 0;
+  int i = 0;
+
+  /* Enable GPIOA, GPIOB */
+  RCC->AHBENR  |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN;
+  /* Set GPIOB Pin 6 and Pin 7 to outputs */
+  GPIOB->MODER |= GPIO_MODER_MODER6_0 | GPIO_MODER_MODER7_0;
+  /* Set GPIOA Pin 0 to input */
+  GPIOA->MODER &= ~GPIO_MODER_MODER0;
+
+  /* PB6 and PB7 is OFF */
+  GPIOB->BSRRH |= 1 << 6 | 1 << 7; 
+
+
+  while (1)
+    {
+      for (i = 0; i < 800; i++)
+	delay ();
+
+      n++;			/* Count the delays */
+      if (n & 1)		/* 1 / 1 ticks */
+      	{
+      	  GPIOB->BSRRL = 1 << 6;
+      	}
+      else
+      	{
+      	  GPIOB->BSRRH = 1 << 6;
+      	}
+      if ((n & 2) && ((GPIOA->IDR & 1) == 0))  /* 2 / 2 ticks, but only when button not pressed */
+      	{
+      	  GPIOB->BSRRL = 1 << 7;
+      	}
+      else
+      	{
+      	  GPIOB->BSRRH = 1 << 7;
+      	}
+    }
+}
+
+void
+delay (void)
+{
+  int i = 80;
+  while (i-- > 0)
+    {
+      asm ("nop");		/* This stops it optimising code out */
+    }
+}
+
+void
+nmi_handler (void)
+{
+  return;
+}
+
+void
+hardfault_handler (void)
+{
+  return;
+}
+#+END_SRC
+
+Теперь код стал намного яснее и внимательный читатель сразу заметит, что в него
+была добавлена обработка кнопки, которая в используемой отладочной плате
+запаяна на PA0 пин. Следующим шагом станет попытка использовать прерывания.
+
+* Работа с кнопкой через прерывания.
+
+Для того чтобы понять что нам конкретно нужно -- снова занимаемся перекрёстным
+поиском по документации и доступным примерам к отладочной плате. Правильные
+ключевые слова обнаружились в примере идущем с официальной библиотекой
+
+#+BEGIN_VERSE
+$ grep Button STM32L1_Discovery_Firmware_Pack_V1.0.3/Projects/AN3964-Temperature_sensor/src/main.c
+...
+  /* Connect Button EXTI Line to Button GPIO Pin */
+...
+$
+#+END_VERSE
+
+Теперь понятно, что нам нужна документация к EXTI и мы сразу можем открывать в
+reference документации соответствующий раздел. И видим описание как с этим
+работать:
+
+#+BEGIN_VERSE
+• Configure the mask bits of the Interrupt lines (EXTI_IMR)
+• Configure the Trigger Selection bits of the Interrupt lines (EXTI_RTSR and
+   EXTI_FTSR)
+• Configure the enable and mask bits that control the NVIC IRQ channel mapped to the
+  external interrupt controller (EXTI) so that an interrupt coming from any one of the lines
+  can be correctly acknowledged.
+#+END_VERSE
+
+Теперь сверяясь с исходником и описанием указанных регистров в документации
+выполняем первые два пункта:
+
+#+BEGIN_SRC c
+void
+configure_exti0_to_pa0 (void)
+{
+  /* Enable GPIOA on case if it's not enabled */
+  RCC->AHBENR  |= RCC_AHBENR_GPIOAEN;
+  /* Set GPIOA Pin 0 to input floating */
+  GPIOA->MODER &= ~GPIO_MODER_MODER0;
+  /* Set speed to 40 MHz */
+  GPIOA->OSPEEDR |= GPIO_OSPEEDER_OSPEEDR0;
+  /* Connect PA0 to EXTI0 line */
+  SYSCFG->EXTICR[0] &= ~0xF; // clean all connected to EXTI0 pins
+  SYSCFG->EXTICR[0] |= 0;    // Connect with PA
+  /* Enable interrupts on EXTI0 */
+  EXTI->IMR |= 1;
+  /* Send event when signal rising */
+  EXTI->RTSR |= 1;
+}
+#+END_SRC
+
+Теперь PA0 пин, на котором висит кнопка, настроен в качестве входа, системные
+регистры соединили PA0 с EXTI0 контроллером внешних прерываний, а сам EXTI
+настроен на генерацию прерываний каждый раз, когда сигнал на подключенных к нему
+пинах растёт. Остаётся выполнить последний пункт из документации. 
+
+Пришло время для поиска информации NVIC. В reference документации для
+микроконтроллера можно найти очень мало: есть таблица прерываний, из которой мы
+сразу можем понять, что нам в таблицу векторов необходимо добавить обработчик
+прерываний, что прерывание для EXTI0 весит на IRQ6 и увидеть отсылку к "PM0056
+programming manual".
+
+Для начала зарегистрируем обработчик прерывания, не забывая сбрасывать
+прерывание после его обработки, чтобы процессор не вызывал его вечно:
+
+#+BEGIN_SRC c
+unsigned int *myvectors[61] __attribute__ ((section ("vectors"))) =
+{
+  [0]  = (unsigned int *) STACK_TOP,
+  [1]  = (unsigned int *) main,
+  [2]  = (unsigned int *) nmi_handler,
+  [3]  = (unsigned int *) hardfault_handler,
+  [22] = (unsigned int *) set_button, /* EXTI0 interrupt */
+};
+
+bool button;
+
+void
+set_button ()
+{
+  button = !button;          // Change button state on button pressing
+
+  if (EXTI->PR & (1<<0))
+    {                        // EXTI0 interrupt pending?
+      EXTI->PR |= (1<<0);    // clear pending interrupt
+    }
+}
+#+END_SRC
+
+И сразу же пойдём читать PM0056 (который гугл выдаст первой же строчкой в
+поиске).  Из него мы можем выяснить, что регистры "Nested vectored interrupt
+controller" лежат в памяти по адресам от 0xE000E100 до 0xE000E4EF и что для
+включения соответствующего IRQ необходимо выставить нужный бит NVIC_ISERx
+регистра:
+
+#+BEGIN_SRC c
+void
+configure_exti0_to_pa0 (void)
+{
+  /* Enable GPIOA on case if it's not enabled */
+  RCC->AHBENR  |= RCC_AHBENR_GPIOAEN;
+  /* Set GPIOA Pin 0 to input floating */
+  GPIOA->MODER &= ~GPIO_MODER_MODER0;
+  /* Set speed to 40 MHz */
+  GPIOA->OSPEEDR |= GPIO_OSPEEDER_OSPEEDR0;
+  /* Connect PA0 to EXTI0 line */
+  SYSCFG->EXTICR[0] &= ~0xF; // clean all connected to EXTI0 pins
+  SYSCFG->EXTICR[0] |= 0;    // Connect with PA
+  /* Enable interrupts on EXTI0 */
+  EXTI->IMR |= 1;
+  /* Send event when signal rising */
+  EXTI->RTSR |= 1;
+  /* Enable IRQ 6 with NVIC Interrupt Set-Pending Register */
+  NVIC->ISER[0] = (uint32_t)0x01 << 6;
+}
+#+END_SRC
+
+После этого наше прерывание начинает работать как надо:
+
+#+BEGIN_SRC c
+#include <stm32l1xx.h>
+#include <stdint.h>
+#include <stdbool.h>
+#define STACK_TOP 0x20004000 // End of memory
+
+void nmi_handler (void);
+void hardfault_handler (void);
+void delay (void);
+int main (void);
+void set_button (void);
+
+volatile bool button;
+
+/* vector table, according to reference documentaion, occupied 61 pointer-sized cells  */
+unsigned int *myvectors[61] __attribute__ ((section ("vectors"))) =
+{
+  [0]  = (unsigned int *) STACK_TOP,
+  [1]  = (unsigned int *) main,
+  [2]  = (unsigned int *) nmi_handler,
+  [3]  = (unsigned int *) hardfault_handler,
+  [22] = (unsigned int *) set_button /* EXTI0 interrupt */
+};
+
+void
+configure_exti0_to_pa0 (void)
+{
+  /* Enable GPIOA on case if it's not enabled */
+  RCC->AHBENR  |= RCC_AHBENR_GPIOAEN;
+  /* Set GPIOA Pin 0 to input floating */
+  GPIOA->MODER &= ~GPIO_MODER_MODER0;
+  /* Set speed to 40 MHz */
+  GPIOA->OSPEEDR |= GPIO_OSPEEDER_OSPEEDR0;
+  /* Connect PA0 to EXTI0 line */
+  SYSCFG->EXTICR[0] &= ~0xF; // clean all connected to EXTI0 pins
+  SYSCFG->EXTICR[0] |= 0;    // Connect with PA
+  /* Enable interrupts on EXTI0 */
+  EXTI->IMR |= 1;
+  /* Send event when signal rising */
+  EXTI->RTSR |= 1;
+  /* Enable IRQ 6 with NVIC Interrupt Set-Pending Register */
+  NVIC->ISER[0] = (uint32_t)0x01 << 6;
+}
+
+int
+main (void)
+{
+  int n = 0;
+  int i = 0;
+  button = false;
+ 
+  /* Enable GPIOA, GPIOB */
+  RCC->AHBENR  |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN;
+  /* Set GPIOB Pin 6 and Pin 7 to outputs */
+  GPIOB->MODER |= GPIO_MODER_MODER6_0 | GPIO_MODER_MODER7_0;
+  /* Set GPIOA Pin 0 to input */
+  GPIOA->MODER &= ~GPIO_MODER_MODER0;
+
+  /* PB6 and PB7 is OFF */
+  GPIOB->BSRRH |= 1 << 6 | 1 << 7; 
+
+  configure_exti0_to_pa0 ();
+
+  while (1)
+    {
+      for (i = 0; i < 800; i++)
+	delay ();
+
+      n++;			/* Count the delays */
+      if (n & 1)		/* 1 / 1 ticks */
+      	{
+      	  GPIOB->BSRRL = 1 << 6;
+      	}
+      else
+      	{
+      	  GPIOB->BSRRH = 1 << 6;
+      	}
+
+      if (button)  /* change depend on button flag */
+      	{
+      	  GPIOB->BSRRL = 1 << 7;
+      	}
+      else
+      	{
+      	  GPIOB->BSRRH = 1 << 7;
+      	}
+    }
+}
+
+void
+delay (void)
+{
+  int i = 80;
+  while (i-- > 0)
+    {
+      asm ("nop");		/* This stops it optimising code out */
+    }
+}
+
+void
+set_button ()
+{
+  button = !button;
+
+  if (EXTI->PR & (1<<0))
+    {                        // EXTI0 interrupt pending?
+      EXTI->PR |= (1<<0);    // clear pending interrupt
+    }
+}
+
+
+void
+nmi_handler (void)
+{
+  return;
+}
+
+void
+hardfault_handler (void)
+{
+  return;
+}
+#+END_SRC
+
+Теперь мы можем кнопкой менять состояние зелёного диода, в то время как синий
+постоянно мигает.
+
+* Навешивание внешнего оборудования
+
+Следующим шагом было решено вынуть LCD экран, посокльку на отладочной плате он
+занимал 28 пинов и не оставлял нам никаких UART портов, на которых в сети
+советуют реализовывать 1 Wire шину, используемую купленным мной датчками
+температуры, занимал, хотя бы частично все пины умеющие работать с таймером, а
+их хочется для генерации PWM сигнала, который управляет сервоприводом, а все
+эти устройства необходимы для реализации оригинальной задумки (смотри первый
+абзац документа).
+
+Вместо LCD экрана был использован трёхсимвольный семисегментный LED экран
+BA56-12GWA с общим анодом.
+
+Здесь надо объяснить что такое экран с общим катодом и что такое экран с общим
+анодом:
+
+Для того чтобы загорелся сегмент диодного экрана -- надо подать напряжение одну
+ногу диода и соединить вторую ногу диода с землёй. Та нога, на которую подаётся
+напряжение, называется анодом, а та, которая соединияется с землёй --
+катодом. Если у нас в руках экран с общим катодом, то выходы, которые должны
+идти на землю с каждого из диодов экрана -- соединины в одну ногу. Эту ногу
+можно соединить с землёй, а подавая сигналы на семь оставшихся -- зажигать
+соответствующие диоды в экране.
+
+# TODO : Добавить картинку
+
+В случае общего анода мы действуем наоборот: на общую ногу подаём напряжение,
+а, для того чтобы зажечь конкретный сегмент (диод) экрана -- соединяем вторую
+ногу данного диода с землёй.
+
+** LED экран
+При работе со светодиодным экраном нужно помнить следующее:
+ + Если мы обе ноги диода подключаем к GPIO пинам, то оба пина надо настроить в
+   output режим, после чего для включения диода надо послать 1 на пин, к
+   которому подключён анод и 0 на пин к которому подключён катод.
+ + Для того чтобы отобразить на экране состоящем из нескольких цифр несколько
+   _разных_ цифр -- надо просто очень быстро поочереди включать по одной цифре.
+
+** Подключение светодиодов
+И последнее это вопрос с, собственно, подключением. В интернетах постоянно
+пишут, что светодиоды надо подключать через резистры. Собственно какой в этом
+смысл: в описании к светодиоду пишут что-то вроде "Forward voltage = 3.2V,
+Forward Current = 20mA" -- это значит, что при напряжении 3.2 вольта он будет
+потреблять 20 mA и нормально работать. Если же напряжение подать выше, то в
+соответствии с законом ома чтобы сила тока не выросла -- надо добавить резистор
+с подходящим сопротивлением, иначе диод может сгореть.
+
+Если же у вас диод рассчитанный на 3.2 вольта, то его можно без опасений
+подключать напрямую к пинам платы, на которые будет подано напряжение в те же
+самые 3.2 вольта.
+
+* Промежуточный результат
+
+В данный момент к плате подключены: дополнительный диод и свтеодиодный экран.
+
+ + Кнопка отладочной платы включает и выключает дополнительный диод. Нажатие
+   кнопки обрабатывается прерываниями.
+ + Отображение значения, хранящегося в глобальной переменной на светодиодном
+   экране происходит по прерыванию таймера tim9, шаги по изучению настройки
+   прерывания таймера на 100% совпадают с шагами сделанными для установки
+   прерывания на кнопку.
+
+Текущий код:
+
+#+BEGIN_SRC c
+#include <stm32l1xx.h>
+#include <stdint.h>
+#include <stdbool.h>
+#define STACK_TOP 0x20004000 // End of memory
+
+void nmi_handler (void);
+void hardfault_handler (void);
+void delay (void);
+int main (void);
+
+void set_button (void);
+void repaint_screen (void);
+
+void show_segs (uint8_t bits, int digit);
+void show (const int bits[8], const int digit);
+void show_num (int num, int dig, bool dot);
+void showi (uint16_t num, uint8_t n);
+void showh (uint16_t num, uint8_t n);
+
+void configure_exti0_to_pa0 (void);
+void configure_tim9 (void);
+
+/* vector table, according to reference documentaion, occupied 61 pointer-sized cells  */
+unsigned int *myvectors[61] __attribute__ ((section ("vectors"))) =
+{
+  [0]  = (unsigned int *) STACK_TOP,
+  [1]  = (unsigned int *) main,
+  [2]  = (unsigned int *) nmi_handler,
+  [3]  = (unsigned int *) hardfault_handler,
+  [22] = (unsigned int *) set_button, /* EXTI0 interrupt */
+  [41] = (unsigned int *) repaint_screen /* Tim9 interrupt interrupt */
+};
+
+volatile uint16_t display_data = 0;
+volatile uint8_t  count_timer  = 0;
+
+int
+main (void)
+{
+  int n = 0;
+  int i = 0;
+  display_data = 0;
+  count_timer  = 0;
+
+  /* Enable GPIOA, GPIOB, GPIOC */
+  RCC->AHBENR  |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN | RCC_AHBENR_GPIOCEN;
+  /* Set GPIOB Pin 6 and Pin 7 to outputs */
+  GPIOB->MODER |= GPIO_MODER_MODER6_0 | GPIO_MODER_MODER7_0;
+  /* Set GPIOA Pin 11 to output */
+  GPIOA->MODER |= GPIO_MODER_MODER11_0;
+
+  /* PB6 and PB7 is OFF */
+  GPIOB->BSRRH |= 1 << 6 | 1 << 7; 
+  GPIOA->BSRRH |= 1 << 11;	   /* PA11 is OFF */
+
+  /* LED Screen-pins to GPIO */
+  GPIOB->MODER |= 1 << (10 * 2) | 1 << (11 * 2) | 1 << (12 * 2) | 1 << (15 * 2);
+  GPIOC->MODER |= 1 << (0 * 2) | 1 << (1 * 2) | 1 << (2 * 2) | 1 << (3 * 2);
+  GPIOC->MODER |= 1 << (10 * 2) | 1 << (11 * 2) | 1 << (12 * 2);
+
+  /* Disable all digits */
+  GPIOB->BSRRH |= 1 << 10 | 1 << 11 | 1 << 12; 
+
+  configure_exti0_to_pa0 ();
+  configure_tim9 ();
+
+  while (1)
+    {
+      if (++display_data > 999) display_data %= 1000;	/* p is displayed number */
+      /* display_data = TIM9->CNT; */
+      
+      for (i = 0; i < 800; i++)
+	delay ();
+
+      n++;			/* Count the delays */
+      if (n & 1)		/* 1 / 1 ticks */
+      	{
+      	  GPIOB->BSRRL = 1 << 6;
+      	}
+      else
+      	{
+      	  GPIOB->BSRRH = 1 << 6;
+      	}
+      if (n & 2)  /* 2 / 2 ticks */
+      	{
+      	  GPIOB->BSRRL = 1 << 7;
+      	}
+      else
+      	{
+      	  GPIOB->BSRRH = 1 << 7;
+      	}
+    }
+}
+
+void
+show_segs (uint8_t bits, int digit)
+{
+  GPIOB->BSRRH |= 1 << 10 | 1 << 11 | 1 << 12; /* Disable all digits */
+  /* Disable all segments */
+  GPIOB->BSRRL |= 1 << 15;
+  GPIOC->BSRRL |= 0x1C0F; /* 0001 1100 0000 1111 */
+  if (digit > 2) return;
+
+  /* enable right digit, according to argument */
+  GPIOB->BSRRL |= 1 << (10 + digit);
+
+  uint16_t digits = 0;
+  digits |= bits & 0x0F;	/* first 4 segments */
+  digits |= (bits & 0x70) << 6;	/* next  3 segments */
+
+  if (bits & 0x80) GPIOB->BSRRH |= 1 << 15;
+  GPIOC->BSRRH |= digits;
+}
+
+/* Digit bitmap:
+     6
+   5   4
+     3
+   0   2
+     1     7
+*/
+const uint8_t _digits[34] = {
+  0x77, /* 0  0111 0111 */
+  0x14, /* 1  0001 0100 */
+  0x5B, /* 2  0101 1011 */
+  0x5E, /* 3  0101 1110 */
+  0x3C, /* 4  0011 1100 */
+  0x6E, /* 5  0110 1110 */
+  0x6F, /* 6  0110 1111 */
+  0x54, /* 7  0101 0100 */
+  0x7F, /* 8  0111 1111 */
+  0x7E, /* 9  0111 1110 */
+  0x7D, /* a  0111 1101 */
+  0x2F, /* b  0010 1111 */
+  0x63, /* c  0110 0011 */
+  0x1F, /* d  0001 1111 */
+  0x6B, /* e  0110 1011 */
+  0x69, /* f  0110 1001 */
+
+  0xF7, /* 0. 1111 0111 */
+  0x94, /* 1. 1001 0100 */
+  0xDB, /* 2. 1101 1011 */
+  0xDE, /* 3. 1101 1110 */
+  0xBC, /* 4. 1011 1100 */
+  0xEE, /* 5. 1110 1110 */
+  0xEF, /* 6. 1110 1111 */
+  0xD4, /* 7. 1101 0100 */
+  0xFF, /* 8. 1111 1111 */
+  0xFE, /* 9. 1111 1110 */
+  0xFD, /* a. 1111 1101 */
+  0xAF, /* b. 1010 1111 */
+  0xE3, /* c. 1110 0011 */
+  0x9F, /* d. 1001 1111 */
+  0xEB, /* e. 1110 1011 */
+  0xE9, /* f. 1110 1001 */
+
+  0x08, /* -  0000 1000 */
+  0x88  /* -. 1000 1000 */
+};
+
+
+inline void
+show_num (int num, int dig, bool dot)
+{
+  if (dot && num < 16) num += 16;
+  uint16_t n = _digits[num];
+  show_segs (n, dig);
+}
+
+inline void
+showi (uint16_t num, uint8_t n)
+{
+  switch (n)
+    {
+    case 0: 
+      show_num ((num / 100) % 10, 0, false);
+      break;
+    case 1:
+      show_num ((num / 10) % 10,  1, false);
+      break;
+    case 2:
+      show_num (num % 10,         2, false);
+      break;
+    default:
+      break;
+    }
+}
+
+inline void
+showh (uint16_t num, uint8_t n)
+{
+  switch (n)
+    {
+    case 0: 
+      show_num (num & 0xF, 2, false);
+      break;
+    case 1:
+      show_num ((num >> 4) & 0xF, 1, false);
+      break;
+    case 2:
+      show_num ((num >> 8) & 0xF, 0, false);
+      break;
+    default:
+      break;
+    }
+}
+
+void
+delay (void)
+{
+  int i = 80;
+  while (i-- > 0)
+    {
+      asm ("nop");		/* This stops it optimising code out */
+    }
+}
+
+void
+set_button (void)
+{
+  if (EXTI->PR & (1<<0))
+    {                        // EXTI0 interrupt pending?
+      EXTI->PR |= (1<<0);    // clear pending interrupt
+    }
+
+  GPIOA->ODR ^= 1 << 11;	/* Change PA11 output state */
+
+  return;
+}
+
+void
+configure_exti0_to_pa0 (void)
+{
+  /* Enable GPIOA on case if it's not enabled */
+  RCC->AHBENR  |= RCC_AHBENR_GPIOAEN;
+  /* Set GPIOA Pin 0 to input floating */
+  GPIOA->MODER &= ~GPIO_MODER_MODER0;
+  /* Set speed to 40 MHz */
+  GPIOA->OSPEEDR |= GPIO_OSPEEDER_OSPEEDR0;
+  /* Connect PA0 to EXTI0 line */
+  SYSCFG->EXTICR[0] &= ~0xF;
+  SYSCFG->EXTICR[0] |= 0;
+  /* Enable interrupts on EXTI0 */
+  EXTI->IMR |= 1;
+  /* Send event when signal rising */
+  EXTI->RTSR |= 1;
+  /* Enable IRQ 6 with NVIC Interrupt Set-Pending Register */
+  NVIC->ISER[0] = (uint32_t)0x01 << 6;
+
+  /* Set IRQ6 priority. IRQ6 in NVIC_IP[6] register */
+  /* NVIC->IP[6] = 0x7F; */
+}
+
+void
+configure_tim9 (void)
+{
+  /* Enable tim9 timer */
+  RCC->APB2ENR |= RCC_APB2ENR_TIM9EN;
+  /* Set clock dividion to 1x */
+  TIM9->CR1 &= ~(3 << 8);
+  /* interrupt on update event */
+  TIM9->DIER |= 1;
+  /* Set timer increase frequency every 0x1 + 1 system clock tick */
+  TIM9->PSC = 0x1;
+  /* Set timer auto reload value, when timer count more than 0x100 */
+  TIM9->ARR = 0x100;
+  /* Enable timer */
+  TIM9->CR1 |= 1;
+
+  /* enable IRQ channel for TIM9 */
+  NVIC->ISER[0] = (uint32_t) 1 << 25;
+} 
+
+void
+repaint_screen (void)
+{
+  if (TIM9->SR & (1 << 0))
+    TIM9->SR &= ~(1 << 0);
+
+  count_timer = (count_timer + 1) % 3; /* Light (tick % 3) symbol on led screen */
+  showi (display_data, count_timer);
+}
+
+void
+nmi_handler (void)
+{
+  return;
+}
+
+void
+hardfault_handler (void)
+{
+  return;
+}
+#+END_SRC
+
+* Далее ....
+
+Следующим шагом будет работа с датчиком температуры при помощи USART порта.
