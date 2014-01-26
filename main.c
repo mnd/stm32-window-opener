@@ -19,6 +19,20 @@ void showh (uint16_t num, uint8_t n);
 
 void configure_exti0_to_pa0 (void);
 void configure_tim9 (void);
+void configure_usart2_pa23 (void);
+void configure_pwm_tim3_pc6 (void);
+
+uint16_t get_temperature (void);
+
+void set_window (uint8_t degree);
+uint8_t get_window (void);
+
+void open_window (void);
+void close_window (void);
+void process_window (int16_t themperature);
+
+#define WIN_OPEN  1740
+#define WIN_CLOSE 1000
 
 /* vector table, according to reference documentaion, occupied 61 pointer-sized cells  */
 unsigned int *myvectors[61] __attribute__ ((section ("vectors"))) =
@@ -28,19 +42,22 @@ unsigned int *myvectors[61] __attribute__ ((section ("vectors"))) =
   [2]  = (unsigned int *) nmi_handler,
   [3]  = (unsigned int *) hardfault_handler,
   [22] = (unsigned int *) set_button, /* EXTI0 interrupt */
-  [41] = (unsigned int *) repaint_screen /* Tim9 interrupt interrupt */
+  [41] = (unsigned int *) repaint_screen /* Tim9 interrupt */
+  //  [54] = (unsigned int *) undefined /* USART2 interrupt on IRQ 38 */
 };
 
 volatile uint16_t display_data = 0;
 volatile uint8_t  count_timer  = 0;
 
+volatile enum {CLOSE = 0, OPEN = 1, AUTO = 2} window_status;
+
 int
 main (void)
 {
-  int n = 0;
   int i = 0;
-  display_data = 0;
+  display_data = 0x05ED;
   count_timer  = 0;
+  window_status = AUTO;
 
   /* Enable GPIOA, GPIOB, GPIOC */
   RCC->AHBENR  |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN | RCC_AHBENR_GPIOCEN;
@@ -61,34 +78,45 @@ main (void)
   /* Disable all digits */
   GPIOB->BSRRH |= 1 << 10 | 1 << 11 | 1 << 12; 
 
+
+  /* Button */
   configure_exti0_to_pa0 ();
+  /* themperature */
+  configure_usart2_pa23 ();
+  /* screen */
   configure_tim9 ();
-
+  /* servo */
+  configure_pwm_tim3_pc6 ();
   while (1)
     {
-      if (++display_data > 999) display_data %= 1000;	/* p is displayed number */
       /* display_data = TIM9->CNT; */
+      int16_t temperature = get_temperature ();
+      display_data = temperature;
+
+      switch (window_status)
+	{
+	case CLOSE:
+	  close_window ();
+	  GPIOB->BSRRH = 1 << 6;
+      	  GPIOB->BSRRH = 1 << 7;
+	  GPIOA->BSRRL = 1 << 11; /* red */
+	  break;
+	case OPEN:
+	  open_window ();
+	  GPIOB->BSRRH = 1 << 6;
+      	  GPIOB->BSRRL = 1 << 7; /* green */
+	  GPIOA->BSRRH = 1 << 11;
+	  break;
+	case AUTO:
+	  process_window (temperature); 
+      	  GPIOB->BSRRL = 1 << 6; /* blue */
+      	  GPIOB->BSRRH = 1 << 7;
+	  GPIOA->BSRRH = 1 << 11;
+	  break;
+	}
       
       for (i = 0; i < 800; i++)
-	delay ();
-
-      n++;			/* Count the delays */
-      if (n & 1)		/* 1 / 1 ticks */
-      	{
-      	  GPIOB->BSRRL = 1 << 6;
-      	}
-      else
-      	{
-      	  GPIOB->BSRRH = 1 << 6;
-      	}
-      if (n & 2)  /* 2 / 2 ticks */
-      	{
-      	  GPIOB->BSRRL = 1 << 7;
-      	}
-      else
-      	{
-      	  GPIOB->BSRRH = 1 << 7;
-      	}
+      	delay ();      
     }
 }
 
@@ -205,6 +233,42 @@ showh (uint16_t num, uint8_t n)
     }
 }
 
+inline void
+show_temp (uint16_t num, uint8_t n)
+{
+  if (num >= 0)
+    switch (n)
+      {
+      case 0: 
+	show_num (((num >> 4) / 10) % 10, 0, false);
+	break;
+      case 1:
+	show_num (((num >> 4)) % 10,  1, true);
+	break;
+      case 2:
+	show_num (num & 0xF,         2, false);
+	break;
+      default:
+	break;
+      }
+  else
+    switch (n)
+      {
+      case 0: 
+	show_num (32, 0, false);
+	break;
+      case 1:
+	show_num ((((-num) >> 4) / 10) % 10, 0, false);
+	break;
+      case 2:
+	show_num ((((-num) >> 4)) % 10,  1, false);
+	break;
+      default:
+	break;
+      }    
+}
+
+
 void
 delay (void)
 {
@@ -223,9 +287,7 @@ set_button (void)
       EXTI->PR |= (1<<0);    // clear pending interrupt
     }
 
-  GPIOA->ODR ^= 1 << 11;	/* Change PA11 output state */
-
-  return;
+  window_status = (window_status + 1) % 3;
 }
 
 void
@@ -252,6 +314,194 @@ configure_exti0_to_pa0 (void)
 }
 
 void
+usart2_set_baud_rate (int rate)
+{
+  /* baud = Fck / (8 x (2-over8) x usartdiv) */
+
+  /* Assume that we are use MSI oscillator clock, e.g. RCC->CFGR & RCC_CFGR_SWS == 0 */
+  /* uint32_t sys_clck_freq = 32768 * (1 << (((RCC->ICSCR & RCC_ICSCR_MSIRANGE) >> 13) + 1)); /\* value in Hz *\/ */
+
+  /* Assume that we are use HSI oscillator clock, e.g. (RCC->CFGR & RCC_CFGR_SWS) >> 2 == 1 */
+  uint32_t sys_clck_freq = HSI_VALUE;
+  uint8_t APBAHBPrescTable[16] = {0, 0, 0, 0, 1, 2, 3, 4, 1, 2, 3, 4, 6, 7, 8, 9};
+  uint32_t hclk_pre = APBAHBPrescTable[(RCC->CFGR & RCC_CFGR_HPRE) >> 4];
+  uint32_t hclk_freq = sys_clck_freq >> hclk_pre;
+  uint32_t clck_pre = APBAHBPrescTable[(RCC->CFGR & RCC_CFGR_PPRE1) >> 8];		/* ABP1 prescaler */
+  uint32_t clck_freq = hclk_freq >> clck_pre; /* usart clock frequency */
+  
+  uint32_t integer_part, fractional_part, frequence; /* 32 bit for garantee calculation without overflow */
+  /* Determine the integer part according to formula from reference page 663
+     powered by 100 */
+  if ((USART2->CR1 & USART_CR1_OVER8) != 0)
+  {
+    /* Integer part computing in case Oversampling mode is 8 Samples */
+    integer_part = (25 * clck_freq) / (2 * 1 * rate);
+  }
+  else
+  {
+    /* Integer part computing in case Oversampling mode is 16 Samples */
+    integer_part = (25 * clck_freq) / (2 * 2 * rate);
+  }
+  frequence = (integer_part / 100) << 4; /* save aaa part of aaa.bb number */
+
+  /* Determine the fractional part */
+  fractional_part = integer_part - (100 * (frequence >> 4)); /* aaa.bb - aaa.00 = .bb */
+
+  /* Implement the fractional part in the register */
+  if ((USART2->CR1 & USART_CR1_OVER8) != 0)
+  {
+    frequence |= (((fractional_part * 8) + 50) / 100) & ((uint8_t) 0x07);
+  }
+  else
+  {
+    frequence |= (((fractional_part * 16) + 50) / 100) & ((uint8_t) 0x0F);
+  }
+  /* USART2->BRR = (uint16_t) frequence; */
+  
+  /* uint32_t qwe = (32768 * (1 << (((RCC->ICSCR & RCC_ICSCR_MSIRANGE) >> 13) + 1))) >> 1; */
+  USART2->BRR = (uint16_t) ((HSI_VALUE) / rate);
+}
+
+void
+configure_usart2_pa23 (void)
+{
+  /* Switch from MSI to HSI, e.g. from 2MHz clock to 16 MHz */
+  RCC->CR   |= RCC_CR_HSION;	/* enable HSI */
+  RCC->CFGR |= RCC_CFGR_SW_HSI;	/* switch to HSI */
+  int i = 0;
+  do { i++; } while (i < 1000);
+  
+  /* Enable GPIOA if not enabled */
+  RCC->AHBENR  |= RCC_AHBENR_GPIOAEN;
+
+  /* PA2 to Alternate function mode */
+  GPIOA->MODER &= ~GPIO_MODER_MODER2;
+  GPIOA->MODER |= GPIO_MODER_MODER2_1;
+  /* PA2 mode to Open Drain. Need when connected without shottke diode */
+  GPIOA->OTYPER |= GPIO_OTYPER_OT_2;
+  /* And set pull-up io */
+  GPIOA->PUPDR |= GPIO_PUPDR_PUPDR2_0;
+  /* PA2 Speed to 40MHz */
+  GPIOA->OSPEEDR |= GPIO_OSPEEDER_OSPEEDR2;
+  /* Configure PA2 alternative function to USART2 aka AF7*/
+  GPIOA->AFR[0] |= 0x7 << (2 * 4);
+
+  /* PA3 to input floating mode */
+  GPIOA->MODER &= ~GPIO_MODER_MODER3;
+  GPIOA->MODER |= GPIO_MODER_MODER3_1;
+  /* PA3 speed to 40MHz */
+  GPIOA->OSPEEDR |= GPIO_OSPEEDER_OSPEEDR3;
+  /* Configure PA3 alternative function to USART2 aka AF7*/
+  GPIOA->AFR[0] |= 0x7 << (3 * 4);
+
+  /* Enable USART2 */
+  RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
+
+  /* Set word length to 8 bit */
+  USART2->CR1 &= ~USART_CR1_M;
+  /* Set 1 stop bit */
+  USART2->CR2 &= ~USART_CR2_STOP;
+  /* Disable parity */
+  USART2->CR1 &= ~USART_CR1_PCE;
+  /* Disable hardware flow control */
+  USART2->CR3 &= ~(USART_CR3_RTSE | USART_CR3_CTSE);
+  /* RX|TX mode enable */
+  USART2->CR1 |= USART_CR1_TE | USART_CR1_RE;
+
+  /* Set baud rate to 115.2 KBps */
+  usart2_set_baud_rate (115200);
+  
+  /* Enable USART2 */
+  USART2->CR1 |= USART_CR1_UE;
+}
+
+uint8_t
+ow_usart2_reset ()
+{
+  usart2_set_baud_rate (9600);
+
+  /* clear transmission complite flag */
+  USART2->SR &= ~USART_SR_TC;
+  /* Send 0xf0 byte throw USART2 */
+  USART2->DR = 0xF0;
+  /* wait while transmission is not completed */
+  do {} while ((USART2->SR & USART_SR_TC) == 0);
+  uint8_t answer = USART2->DR;
+  
+  usart2_set_baud_rate (115200);
+   
+  return answer;
+}
+
+/* bit == 0xFF || 0x00 */
+inline void
+ow_usart2_write_bit (uint8_t bit)
+{
+  /* clear transmission complite flag */
+  USART2->SR &= ~USART_SR_TC;
+  /* Send byte throw USART2 */
+  USART2->DR = bit;
+  /* wait while transmission is not completed */
+  do {} while ((USART2->SR & USART_SR_TC) == 0);
+  
+  return;
+}
+
+/* return value 0x00 or 0x01 */
+inline uint8_t
+ow_usart2_read_bit ()
+{
+  /* clear transmission complite flag */
+  USART2->SR &= ~USART_SR_TC;
+  /* Send 0xf0 byte throw USART2 */
+  USART2->DR = 0xFF;
+  /* wait while transmission is not completed */
+  do {} while ((USART2->SR & USART_SR_TC) == 0);
+  uint8_t answer = USART2->DR;
+
+  return (answer == 0xFF ? 0x01 : 0x0);
+}
+
+uint16_t
+get_temperature ()
+{
+  uint16_t result = 0;
+  uint8_t convert[16] =
+    {0x00, 0x00, 0XFF, 0xFF, 0x00, 0x00, 0XFF, 0xFF, /* 0xCC -- SKIP ROM */
+     0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00}; /* 0x44 -- CONVERT T */
+  uint8_t request[16] = 
+    {0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF, // 0xcc SKIP ROM
+     0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xFF}; // 0xbe READ SCRATCH
+
+  int i, j;
+
+  /* reset 1wire */
+  ow_usart2_reset ();
+  /* write 0xCC 0x44 */
+  for (i = 0; i < 16; ++i)
+    {
+      ow_usart2_write_bit (convert[i]);
+    }
+  /* wait for calculation */
+  for (i = 0; i < 100000; ++i);
+
+  ow_usart2_reset ();
+  for (i = 0; i < 16; ++i)
+    {
+      ow_usart2_write_bit (request[i]);
+    }
+
+  /* read 2 bytes answer */  
+  for (i = 0; i < 16; ++i)
+    {
+      uint8_t bit = ow_usart2_read_bit ();
+      result |= bit << i ;
+      for (j = 0; j < 100; ++j);
+    }
+  return result;
+}
+
+void
 configure_tim9 (void)
 {
   /* Enable tim9 timer */
@@ -270,7 +520,102 @@ configure_tim9 (void)
   /* enable IRQ channel for TIM9 */
   NVIC->ISER[0] = (uint32_t) 1 << 25;
   return;
-} 
+}
+
+void
+configure_pwm_tim3_pc6 ()
+{
+  /* Enable GPIOC if not enabled */
+  RCC->AHBENR  |= RCC_AHBENR_GPIOCEN;
+  /* Enable alternative mode for PC6 */
+  GPIOC->MODER &= ~GPIO_MODER_MODER6;
+  GPIOC->MODER |= GPIO_MODER_MODER6_1;
+  /* PC6 Speed to 40MHz */
+  GPIOC->OSPEEDR |= GPIO_OSPEEDER_OSPEEDR6;
+  /* Configure PC6 alternative function to TIM3 (TIM3..TIM5) aka AF2*/
+  GPIOC->AFR[0] |= 0x2 << (6 * 4);
+  
+  /* Enable tim3 timer */
+  RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
+  /* Set clock interrupt on every sampling clock interrupt */
+  TIM3->CR1 &= ~TIM_CR1_CKD;
+  /* Enable ARR auto reload */
+  TIM3->CR1 |= TIM_CR1_ARPE;
+  /* Edge aligned mode */
+  TIM3->CR1 &= ~TIM_CR1_CMS;
+  /* Upcount */
+  TIM3->CR1 &= ~TIM_CR1_DIR;
+
+  /* Select PWM mode 1 in output capture mode */
+  TIM3->CCMR1 |= TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_1;
+  /* Enable preload register in tim3_ccr1 */
+  TIM3->CCMR1 |= TIM_CCMR1_OC1PE;
+  /* Counter clock frequency = psc + 1 = at every tick. */
+  /* If we use 16MHz HSI clock, then tim3 would work at 1MHz rate. */
+  TIM3->PSC = 0xF;
+  /* Set timer autoreload value on every 10000ticks (10 miliseconds according previous configuration) */
+  TIM3->ARR = 10000;
+  /* enable output */
+  TIM3->CCER |= TIM_CCER_CC1E;
+
+  /* Set PWM width to 0° and enable auto window mode */
+  window_status = AUTO;
+  
+  /* Initialize shadowed registers */
+  TIM3->EGR |= TIM_EGR_UG;
+  /* Enable TIM3 counter */
+  TIM3->CR1 |= TIM_CR1_CEN;
+}
+
+uint8_t degree;
+/* set_window (0) to close window.
+   set_window (100) to open window.
+   Argument takes with step 1. */
+void
+set_window (uint8_t deg)
+{
+  degree = deg;
+  uint32_t step = (WIN_OPEN - WIN_CLOSE); /* make it dividable by 16 */
+  TIM3->CCR1 = (degree == 100) ? WIN_OPEN : WIN_CLOSE + (((uint32_t) deg) * step)/100;
+}
+
+inline uint8_t
+get_window (void)
+{
+  return degree;
+}
+
+void
+open_window (void)
+{
+  if (get_window () != 100)
+      set_window (100);
+}
+
+void
+close_window (void)
+{
+  if (get_window () != 0)
+    set_window (0);
+}
+
+void
+semiopen_window (void)
+{
+  if (get_window () != 55)
+    set_window (55);
+}
+
+void
+process_window (int16_t themperature)
+{  
+  if (themperature < (20 << 4))	/* less than 20.0°C */
+    close_window ();
+  else if (themperature > (24 << 4)) /* more than 24.4°C */
+    open_window ();
+  else if (themperature > (21 << 4) && themperature < (23 << 4)) /* 21°C < t < 23 °C */
+    semiopen_window ();
+}
 
 void
 repaint_screen (void)
@@ -279,7 +624,7 @@ repaint_screen (void)
     TIM9->SR &= ~(1 << 0);
 
   count_timer = (count_timer + 1) % 3; /* Light (tick % 3) symbol on led screen */
-  showi (display_data, count_timer);
+  show_temp (display_data, count_timer);
 }
 
 void
