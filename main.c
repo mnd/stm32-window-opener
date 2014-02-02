@@ -318,53 +318,13 @@ void
 usart2_set_baud_rate (int rate)
 {
   /* baud = Fck / (8 x (2-over8) x usartdiv) */
-
-  /* When we are use MSI oscillator clock, e.g. RCC->CFGR & RCC_CFGR_SWS == 0:
-     uint32_t sys_clck_freq =
-       32768 *(1 << (((RCC->ICSCR & RCC_ICSCR_MSIRANGE) >> 13) + 1)) */
-
-  /* Assume that we are use HSI oscillator clock,
-     e.g. (RCC->CFGR & RCC_CFGR_SWS) >> 2 == 1 */
-  uint32_t sys_clck_freq = HSI_VALUE;
-  uint8_t APBAHBPrescTable[16] = {0, 0, 0, 0, 1, 2, 3, 4, 1, 2, 3, 4, 6, 7, 8, 9};
-  uint32_t hclk_pre = APBAHBPrescTable[(RCC->CFGR & RCC_CFGR_HPRE) >> 4];
-  uint32_t hclk_freq = sys_clck_freq >> hclk_pre;
-  uint32_t clck_pre = APBAHBPrescTable[(RCC->CFGR & RCC_CFGR_PPRE1) >> 8];		/* ABP1 prescaler */
-  uint32_t clck_freq = hclk_freq >> clck_pre; /* usart clock frequency */
-
-  /* 32 bit for garantee calculation without overflow */
-  uint32_t integer_part, fractional_part, frequence;
-  /* Determine the integer part according to formula from reference page 663
-     powered by 100 */
-  if ((USART2->CR1 & USART_CR1_OVER8) != 0)
-  {
-    /* Integer part computing in case Oversampling mode is 8 Samples */
-    integer_part = (25 * clck_freq) / (2 * 1 * rate);
-  }
-  else
-  {
-    /* Integer part computing in case Oversampling mode is 16 Samples */
-    integer_part = (25 * clck_freq) / (2 * 2 * rate);
-  }
-  frequence = (integer_part / 100) << 4; /* save aaa part of aaa.bb number */
-
-  /* Determine the fractional part */
-  /* aaa.bb - aaa.00 = .bb */
-  fractional_part = integer_part - (100 * (frequence >> 4));
-
-  /* Implement the fractional part in the register */
-  if ((USART2->CR1 & USART_CR1_OVER8) != 0)
-  {
-    frequence |= (((fractional_part * 8) + 50) / 100) & ((uint8_t) 0x07);
-  }
-  else
-  {
-    frequence |= (((fractional_part * 16) + 50) / 100) & ((uint8_t) 0x0F);
-  }
-  USART2->BRR = (uint16_t) frequence;
-
-  /* Same result we can get with code: */
-  /* USART2->BRR = (uint16_t) ((HSI_VALUE) / rate); */
+  /* Assume that we use HSI timer and over8 == 0. USART2->BRR (aka usartdiv)
+     is fixed point fractional number ABC.D, and if we interpret it like integer
+     number ABCD then (uint16_t) USART2->BRR == 16 * usartdiv.
+     So baud = Fck / (8 x (2-0) x usartdiv) = Fck / (16 x usartdiv)
+             = Fck / ((uint16_t) USART2->BRR),
+     and (uint16_t) USART2->BRR = Fck / rate */
+  USART2->BRR = (uint16_t) ((HSI_VALUE) / rate);
 }
 
 void
